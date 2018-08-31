@@ -1,68 +1,65 @@
-# kolla gruppmedlemsskap
-# parsa alla foldrar och se var samma konto har write
-<#
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 
-$acl = get-acl C:\temp # System.Security.AccessControl.DirectorySecurity
-$folder = get-item -Path c:\temp
-#$rules = $acl.GetAccessRules($true, $true, System.Security.Principal.SecurityIdentifier)
-$rules = $folder.GetAccessControl().GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) # System.Security.AccessControl.FileSystemAccessRule
-foreach ($access in $acl) 
-{ 
-    if ($access.Groups.Contains($user.IdentityReference)) 
-    { 
-        write-host $access.FileSystemRights
+#function Get-WritableFolders {
+    [CmdletBinding()]
+    param (
+        $path
+    )
+    
+    begin {
+        $fsr = [System.Security.AccessControl.FileSystemRights]
+        $writeaccessright = $fsr::Write
+        $denyaccesstype = [System.Security.AccessControl.AccessControlType]::Deny
+        $useridentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+
     }
-}
-#>
-# nytt på fm
+    
+    process {
 
-$aclfolder = get-acl C:\temp
-$accessRight = [System.Security.AccessControl.FileSystemRights]::Write
-$useridentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$aclacl = $aclfolder.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-
-foreach ($rule in $aclacl) {
-    #write-host $rule.IdentityReference
-
-    # Groups innehåller alla grupper, som SID, som användaren är med i!
-    # så: om användaren, eller nån av dens grupper finns i rule.identityreference
-    if ($useridentity.Groups.Contains($rule.IdentityReference)) {
-        #..och om accesright jämfört med filesystemright är samma som accesright?!
-        # okej, bitwise AND betyder att: 011 band 010 = 010. accessregeln måste lagras som en bitmask.
-        if (($AccessRight -band $rule.FileSystemRights) -eq $AccessRight) {
-            if ($rule.AccessControlType -eq "Allow") {
-                write-host "hmmmmm"
+        Get-ChildItem -Recurse $path -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $acl = get-acl $_.FullName -ErrorAction SilentlyContinue
             }
-        }
-    }
-}
+            catch [System.UnauthorizedAccessException] {
+                Write-Verbose "Permission denied"
+            }
 
-# access rights: https://msdn.microsoft.com/en-us/library/windows/desktop/aa374896(v=vs.85).aspx
+            foreach ($rule in $acl.Access) {
+                try {
+                    # om ACE endast innehåller "APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES" så funkar inte Translate
+                    if (($rule.IdentityReference -eq "APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES") -or 
+                        ($rule.IdentityReference -eq "APPLICATION PACKAGE AUTHORITY\Software and hardware certificates or a smart card")) {
+                        
+                            Write-Verbose "$PSitem includes ACE with stuff we cant translate"
+                        break
+                    }
 
-<#
-    public static bool DirectoryHasPermission(string DirectoryPath, FileSystemRights AccessRight)
-    {
-        if (string.IsNullOrEmpty(DirectoryPath)) return false;
-
-        try
-        {
-            AuthorizationRuleCollection rules = Directory.GetAccessControl(DirectoryPath).GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
-            WindowsIdentity identity = WindowsIdentity.GetCurrent();
-
-            foreach (FileSystemAccessRule rule in rules)
-            {
-                if (identity.Groups.Contains(rule.IdentityReference))
-                {
-                    if ((AccessRight & rule.FileSystemRights) == AccessRight)
-                    {
-                        if (rule.AccessControlType == AccessControlType.Allow)
-                            return true;
+                    # är jag , eller någon grupp jag är medlem i med i någon ACE?
+                    if (($useridentity.Groups.Contains($rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]))) -or ($useridentity.User.Value -eq $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]))) {
+                    # har jag deny på write?
+                        if ($rule.AccessControlType -eq $denyaccesstype) {
+                            break
+                        }                    
+                        elseif ($rule.FileSystemRights.HasFlag($writeaccessright)) {
+                            #Write-Output "$($_.Fullname) is Writable by $($useridentity.Name)"
+                            #$obj = ""
+                            #$obj = [PSCustomObject]@{
+                            #    Folder = $($_.Fullname)
+                            #    Writable = $true}
+                            return $($_.FullName)                          
+                        }
                     }
                 }
+                catch [System.Security.Principal.IdentityNotMappedException] {
+                    Write-Verbose "Coulnd not translate ACE for $($_.FullName)"
+                }
+                catch [Exception] {
+                    Write-Verbose "något annat blev fel"
+                }
             }
+            
         }
-        catch { }
-        return false;
     }
-#>
+    
+    end {
+    }
+#}
